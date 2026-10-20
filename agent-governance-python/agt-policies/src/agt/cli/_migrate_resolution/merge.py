@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import Any
 
 from .errors import ResolutionError
@@ -393,6 +394,18 @@ def merge_documents(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if not isinstance(rule, dict) or "name" not in rule:
                 raise ResolutionError.invalid_governance(
                     f"rule at level {level} is missing name"
+                )
+            priority = rule.get("priority", 0)
+            if (
+                isinstance(priority, bool)
+                or not isinstance(priority, (int, float))
+                or not math.isfinite(priority)
+            ):
+                # The sort below would raise a bare TypeError on a null or
+                # string priority and skip the migration report entirely.
+                raise ResolutionError.invalid_governance(
+                    f"rule {rule['name']!r} has a non-numeric priority "
+                    f"({type(priority).__name__}); priority must be a finite number"
                 )
             if _condition_unsatisfiable(
                 rule.get("condition"), is_deny=_rule_action(rule) == "deny"
