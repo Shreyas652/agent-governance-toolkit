@@ -1629,6 +1629,69 @@ def test_merge_rejects_non_finite_priority() -> None:
         merge_documents([{"rules": [{**_rule("a", "deny"), "priority": float("nan")}]}])
 
 
+def test_merge_accepts_int_priority_too_large_for_float_single_document() -> None:
+    # math.isfinite(10**400) raised OverflowError ("int too large to convert
+    # to float"), another bare exception the CLI does not catch. Only a float
+    # can be non-finite, so an int of any size is a valid priority and sorts.
+    rules = [_rule("low", "deny", 1), _rule("huge", "deny", 10**400)]
+    assert [r["name"] for r in merge_documents([{"rules": rules}])] == ["huge", "low"]
+
+
+def test_merge_accepts_int_priority_too_large_for_float_multi_document() -> None:
+    parent = {"rules": [_rule("low", "deny", 1)]}
+    child = {"rules": [_rule("huge", "deny", 10**400)]}
+    assert [r["name"] for r in merge_documents([parent, child])] == ["huge", "low"]
+
+
+@pytest.mark.parametrize(
+    "rules",
+    [
+        pytest.param(None, id="null"),
+        pytest.param("deny_all", id="string"),
+        pytest.param({"name": "a"}, id="mapping"),
+        pytest.param(3, id="int"),
+    ],
+)
+def test_merge_rejects_non_list_rules_single_document(rules: object) -> None:
+    # 'rules: null' (a bare 'rules:' line) raised a bare TypeError from the
+    # for loop; a string or mapping was iterated element by element and
+    # misreported as a nameless rule. Every non-list shape is refused with
+    # the offending type named. A missing key still means no rules.
+    with pytest.raises(ResolutionError, match="rules at level 0 must be a list") as exc:
+        merge_documents([{"rules": rules}])
+    assert exc.value.reason == ResolutionReason.INVALID_GOVERNANCE
+    assert type(rules).__name__ in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "rules",
+    [pytest.param(None, id="null"), pytest.param("deny_all", id="string")],
+)
+def test_merge_rejects_non_list_rules_multi_document(rules: object) -> None:
+    parent = {"rules": [_rule("p", "deny", 1)]}
+    child = {"rules": rules}
+    with pytest.raises(ResolutionError, match="rules at level 1 must be a list") as exc:
+        merge_documents([parent, child])
+    assert exc.value.reason == ResolutionReason.INVALID_GOVERNANCE
+
+
+def test_merge_missing_rules_key_means_no_rules() -> None:
+    assert merge_documents([{"intervention_points": {}}]) == []
+    assert [r["name"] for r in merge_documents([{}, {"rules": [_rule("c", "deny")]}])] == ["c"]
+
+
+def test_discover_nul_byte_in_action_path_fails_closed(tmp_path: Path) -> None:
+    # Path.resolve() raises ValueError ("embedded null character") for a NUL
+    # byte, which the OSError/RuntimeError handler let escape as a traceback.
+    (tmp_path / "governance.yaml").write_text("rules: []\n", encoding="utf-8")
+
+    with pytest.raises(ResolutionError) as exc:
+        discover_policies(tmp_path / "svc\x00x", tmp_path)
+
+    assert exc.value.reason == ResolutionReason.PATH_TRAVERSAL
+    assert "ValueError" in str(exc.value)
+
+
 def test_merge_accepts_absent_and_float_priority() -> None:
     rules = [{**_rule("a", "deny"), "priority": 2.5}, _rule("b", "deny")]
     del rules[1]["priority"]

@@ -54,7 +54,8 @@ def discover_policies(action_path: Path, root: Path) -> list[Path]:
     try:
         root = root.resolve()
         action_path = action_path.resolve()
-    except (OSError, RuntimeError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
+        # ValueError: a NUL byte in the path ("embedded null character").
         raise ResolutionError.path_traversal(
             f"failed to resolve action_path under {root} ({type(exc).__name__})"
         ) from exc
@@ -93,7 +94,7 @@ def discover_policies(action_path: Path, root: Path) -> list[Path]:
             if current == root or current.parent == current:
                 break
             current = current.parent
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise ResolutionError.invalid_governance(
             f"failed to walk governance chain under {root} ({type(exc).__name__})"
         ) from exc
