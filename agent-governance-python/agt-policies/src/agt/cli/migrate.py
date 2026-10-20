@@ -746,13 +746,26 @@ def _migrate_governance_policy(
         )
 
     bundle_dir = policies_dir / f"{base_name}_bundle"
-    if policies_dir.exists() and not policies_dir.is_dir():
-        # Caught in the preflight pass so --write never starts: the chains
-        # are applied before the policies, and a FileExistsError from mkdir
-        # here would otherwise escape after they had already been moved.
+    # Caught in the preflight pass so --write never starts: the chains are
+    # applied before the policies, and a FileExistsError or PermissionError
+    # from mkdir here would otherwise escape after they had already been
+    # moved. is_symlink() covers a broken symlink named 'policies', for which
+    # exists() is False but mkdir() still fails.
+    if (policies_dir.is_symlink() or policies_dir.exists()) and not policies_dir.is_dir():
         finding.manual_review.append(
             f"policies path {policies_dir} exists and is not a directory; "
             "move it aside before migrating"
+        )
+        finding.rewrite_snippet = _render_governance_rewrite_snippet(
+            kwargs=finding.kwargs,
+            manifest_path=manifest_path,
+            manual_review=finding.manual_review,
+        )
+        return
+    if policies_dir.is_dir() and not os.access(policies_dir, os.W_OK):
+        finding.manual_review.append(
+            f"policies directory {policies_dir} is not writable; "
+            "fix its permissions before migrating"
         )
         finding.rewrite_snippet = _render_governance_rewrite_snippet(
             kwargs=finding.kwargs,
@@ -1235,10 +1248,10 @@ def run_from_args(args: argparse.Namespace) -> int:
         try:
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(text, encoding="utf-8")
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             # The report was already printed above; a failed copy to disk
             # must not turn into a traceback or change the migration's own
-            # exit code.
+            # exit code. ValueError: a NUL byte in the path.
             print(
                 f"agt migrate: could not write report to {out_path}: {exc}",
                 file=sys.stderr,
