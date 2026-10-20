@@ -1192,3 +1192,83 @@ policy = GovernancePolicy(name="x")
     assert finding.manifest_path is not None
     assert finding.manifest_path.is_file()
     assert "agt.cli._migrate_bridge" not in finding.rewrite_snippet
+
+
+# ---------------------------------------------------------------------------
+# #3137 regressions: IO failures become findings, never tracebacks
+# ---------------------------------------------------------------------------
+
+
+def test_write_refuses_when_policies_path_is_a_file(tmp_path: Path) -> None:
+    # A regular file named 'policies' next to the source made policies_dir
+    # .mkdir() raise FileExistsError after the governance chains had already
+    # been moved aside. The preflight pass must record it so --write never
+    # starts.
+    chain = tmp_path / "svc"
+    chain.mkdir()
+    _write_governance(chain / "governance.yaml")
+    _write_source(
+        tmp_path / "bot.py",
+        "from agent_os.integrations.base import GovernancePolicy\n"
+        "policy = GovernancePolicy(name='bot', max_tokens=10)\n",
+    )
+    (tmp_path / "policies").write_text("not a directory\n", encoding="utf-8")
+
+    report = migrate_mod.migrate_project(tmp_path, write=True)
+
+    finding = report.governance_policies[0]
+    assert not finding.applied
+    assert any("is not a directory" in note for note in finding.manual_review)
+    assert report.requires_manual_review()
+    # Nothing was applied: the chain is untouched and the file is still a file.
+    assert (chain / "governance.yaml").is_file()
+    assert not (chain / "manifest.yaml").exists()
+    assert (tmp_path / "policies").is_file()
+
+
+def test_write_records_staging_directory_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_source(
+        tmp_path / "bot.py",
+        "from agent_os.integrations.base import GovernancePolicy\n"
+        "policy = GovernancePolicy(name='bot', max_tokens=10)\n",
+    )
+
+    def denied(*args: Any, **kwargs: Any):
+        raise PermissionError("no staging for you")
+
+    monkeypatch.setattr(migrate_mod.tempfile, "TemporaryDirectory", denied)
+
+    report = migrate_mod.migrate_project(tmp_path, write=True)
+
+    finding = report.governance_policies[0]
+    assert not finding.applied
+    assert any("could not create migration staging" in note for note in finding.manual_review)
+    assert not (tmp_path / "policies" / "bot.manifest.yaml").exists()
+
+
+def test_write_report_creates_missing_parent_directory(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write_governance(tmp_path / "governance.yaml")
+    report_path = tmp_path / "out" / "nested" / "MIGRATION.md"
+
+    code = migrate_mod.main(["v4-to-v5", str(tmp_path), "--write-report", str(report_path)])
+
+    assert code == 0
+    assert report_path.is_file()
+    assert "AGT v4 → v5 Migration Report" in report_path.read_text(encoding="utf-8")
+
+
+def test_write_report_failure_is_reported_not_raised(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # Used to be an uncaught FileNotFoundError/IsADirectoryError after the
+    # report had already been printed, turning a clean dry run into exit 1.
+    _write_governance(tmp_path / "governance.yaml")
+    report_path = tmp_path / "report-dir"
+    report_path.mkdir()
+
+    code = migrate_mod.main(["v4-to-v5", str(tmp_path), "--write-report", str(report_path)])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "AGT v4 → v5 Migration Report" in captured.out
+    assert "could not write report" in captured.err
