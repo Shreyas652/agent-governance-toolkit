@@ -5,10 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> [!IMPORTANT]
-> All releases are currently **public preview releases**. They are Microsoft-signed
-> and production-quality but may have breaking changes before GA.
-
 ## [Unreleased]
 
 ### Changed
