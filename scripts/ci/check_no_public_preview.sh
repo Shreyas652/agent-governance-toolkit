@@ -10,15 +10,16 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-# Files allowed to carry the phrase: historical records only.
+# Files allowed to carry the phrase: dated historical records only.
 ALLOW=(
   ':!CHANGELOG.md'
   ':!BREAKING_CHANGES.md'
   ':!docs/releases/'
+  ':!docs/dependency-audits/'
   ':!scripts/ci/check_no_public_preview.sh'
 )
 
-HITS=$(git grep -n -i -E 'public[[:space:]]+preview' -- . "${ALLOW[@]}" || true)
+HITS=$(git grep -n -i -E 'public[[:space:]-]+preview' -- . "${ALLOW[@]}" || true)
 
 if [ -n "$HITS" ]; then
   echo "❌ check_no_public_preview: the release-stage label is back:"
