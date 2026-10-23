@@ -1505,16 +1505,21 @@ fn ifc_deny_snapshot() -> JsonValue {
     })
 }
 
-/// Every public constructor, paired with the deny evaluation it supports
-/// and the policy id and reason the telemetry event must carry.
-fn every_constructor() -> Vec<(
+/// One public constructor under test: its name, the control it built, the
+/// deny evaluation it supports, and the policy id and reason code the
+/// telemetry event must carry.
+type ConstructorCase = (
     &'static str,
     Result<AgentControl, RuntimeError>,
     InterceptionPoint,
     JsonValue,
     &'static str,
     &'static str,
-)> {
+);
+
+/// Every public constructor, paired with the deny evaluation it supports
+/// and the policy id and reason the telemetry event must carry.
+fn every_constructor() -> Vec<ConstructorCase> {
     let test_input = json!({"input": {"text": "hi"}});
     let run_file = manifest_file(run_manifest());
     let ifc_yaml = ifc_manifest_yaml_with_absolute_paths();
