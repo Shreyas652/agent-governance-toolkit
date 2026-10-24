@@ -1007,6 +1007,92 @@ def test_merge_keeps_rule_not_fully_covered_by_higher_priority_opposite() -> Non
     ]
 
 
+@pytest.mark.parametrize(
+    ("higher_condition", "lower_condition"),
+    [
+        pytest.param(
+            {"field": "metadata.region", "operator": "ne", "value": "US"},
+            {"field": "metadata.region", "operator": "ne", "value": "US"},
+            id="ne-deny-also-matches-absent",
+        ),
+        pytest.param(
+            {
+                "field": "metadata.region",
+                "operator": "not_in",
+                "value": ["US"],
+            },
+            {
+                "field": "metadata.region",
+                "operator": "not_in",
+                "value": ["US"],
+            },
+            id="not-in-deny-also-matches-absent",
+        ),
+        pytest.param(
+            {"field": "metadata.region", "operator": "eq", "value": None},
+            {"field": "metadata.region", "operator": "eq", "value": None},
+            id="eq-null-deny-also-matches-absent",
+        ),
+        pytest.param(
+            {
+                "field": "metadata.region",
+                "operator": "in",
+                "value": ["US", None],
+            },
+            {"field": "metadata.region", "operator": "eq", "value": None},
+            id="in-does-not-cover-null-equality",
+        ),
+    ],
+)
+def test_merge_preserves_deny_reachable_only_on_null_or_absence(
+    higher_condition: dict[str, object], lower_condition: dict[str, object]
+) -> None:
+    rules = [
+        _rule_with_condition("higher-allow", "allow", higher_condition, 100),
+        _rule_with_condition("reachable-deny", "deny", lower_condition, 10),
+    ]
+
+    assert [rule["name"] for rule in merge_documents([{"rules": rules}])] == [
+        "higher-allow",
+        "reachable-deny",
+    ]
+
+
+def test_merge_still_rejects_coverage_when_null_list_member_cannot_match() -> None:
+    rules = [
+        _rule_with_condition(
+            "higher-allow",
+            "allow",
+            {"field": "metadata.region", "operator": "eq", "value": "US"},
+            100,
+        ),
+        _rule_with_condition(
+            "dead-deny",
+            "deny",
+            {
+                "field": "metadata.region",
+                "operator": "in",
+                "value": ["US", None],
+            },
+            10,
+        ),
+    ]
+
+    with pytest.raises(ResolutionError, match="dead-deny.*covered.*higher-allow"):
+        merge_documents([{"rules": rules}])
+
+
+def test_merge_deny_negative_condition_covers_guarded_allow() -> None:
+    condition = {"field": "metadata.region", "operator": "ne", "value": "US"}
+    rules = [
+        _rule_with_condition("higher-deny", "deny", condition, 100),
+        _rule_with_condition("dead-allow", "allow", condition, 10),
+    ]
+
+    with pytest.raises(ResolutionError, match="dead-allow.*covered.*higher-deny"):
+        merge_documents([{"rules": rules}])
+
+
 # ── merge_top_level_section ──────────────────────────────────────────
 
 
@@ -1114,6 +1200,50 @@ def test_resolve_maps_v4_tool_fields_to_snapshot_paths(tmp_path: Path) -> None:
     assert 'object.get(input.snapshot, ["tool_call", "name"], null)' in rego
     assert 'object.get(input.snapshot, ["tool_call", "args", "force"], null)' in rego
     assert 'object.get(input.snapshot, ["tool_name"], null)' not in rego
+
+
+@pytest.mark.parametrize(
+    ("intervention_point", "field"),
+    [
+        pytest.param(
+            "pre_tool_call",
+            "envelope.budgets.tool_call_count",
+            id="shared-envelope",
+        ),
+        pytest.param("output", "response.content", id="agt-output-response"),
+    ],
+)
+def test_resolve_accepts_agt_host_snapshot_roots(
+    tmp_path: Path, intervention_point: str, field: str
+) -> None:
+    binding = {
+        intervention_point: {
+            "policy_target": "$.tool_call.args"
+            if intervention_point == "pre_tool_call"
+            else "$.response.content",
+            "policy_target_kind": "tool_args"
+            if intervention_point == "pre_tool_call"
+            else "output",
+            "policy": {"id": "agt_legacy_rules"},
+        }
+    }
+    _write(
+        tmp_path / "governance.yaml",
+        {
+            "rules": [
+                _rule_with_condition(
+                    "valid-agt-field",
+                    "deny",
+                    {"field": field, "operator": "exists", "value": None},
+                )
+            ],
+            "intervention_points": binding,
+        },
+    )
+
+    manifest = resolve_manifest(tmp_path, tmp_path)
+
+    assert manifest["policies"]["agt_legacy_rules"]["bundle"]
 
 
 def test_resolve_honours_explicit_default_deny(tmp_path: Path) -> None:

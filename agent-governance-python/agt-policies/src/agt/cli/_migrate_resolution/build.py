@@ -13,11 +13,11 @@ expands the translation to cover the full spec of AGT v4 conditions.
 
 from __future__ import annotations
 
-from copy import deepcopy
 import hashlib
 import json
 import logging
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -60,15 +60,19 @@ _AMBIENT_SNAPSHOT_ROOTS = {
     "metadata",
 }
 
+_COMMON_SNAPSHOT_ROOTS = _AMBIENT_SNAPSHOT_ROOTS | {"envelope"}
+
 _SNAPSHOT_ROOTS_BY_INTERVENTION_POINT = {
-    "agent_startup": _AMBIENT_SNAPSHOT_ROOTS | {"agent", "metadata"},
-    "input": _AMBIENT_SNAPSHOT_ROOTS | {"input"},
-    "pre_model_call": _AMBIENT_SNAPSHOT_ROOTS | {"model_request"},
-    "post_model_call": _AMBIENT_SNAPSHOT_ROOTS | {"model_response"},
-    "pre_tool_call": _AMBIENT_SNAPSHOT_ROOTS | {"tool_call"},
-    "post_tool_call": _AMBIENT_SNAPSHOT_ROOTS | {"tool_call", "tool_result"},
-    "output": _AMBIENT_SNAPSHOT_ROOTS | {"output"},
-    "agent_shutdown": _AMBIENT_SNAPSHOT_ROOTS | {"agent", "reason"},
+    "agent_startup": _COMMON_SNAPSHOT_ROOTS | {"agent", "agent_init"},
+    "input": _COMMON_SNAPSHOT_ROOTS | {"input"},
+    "pre_model_call": _COMMON_SNAPSHOT_ROOTS
+    | {"model", "model_request", "messages", "tools", "request_id"},
+    "post_model_call": _COMMON_SNAPSHOT_ROOTS
+    | {"model", "model_response", "request_id", "response", "usage"},
+    "pre_tool_call": _COMMON_SNAPSHOT_ROOTS | {"tool_call"},
+    "post_tool_call": _COMMON_SNAPSHOT_ROOTS | {"tool_call", "tool_result"},
+    "output": _COMMON_SNAPSHOT_ROOTS | {"output", "response", "message_chain"},
+    "agent_shutdown": _COMMON_SNAPSHOT_ROOTS | {"agent", "reason", "summary"},
 }
 
 

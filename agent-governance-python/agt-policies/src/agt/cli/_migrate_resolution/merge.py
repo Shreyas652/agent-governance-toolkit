@@ -380,14 +380,37 @@ def _json_value_in(value: Any, candidates: list[Any]) -> bool:
     return any(_rego_values_equal(value, candidate) for candidate in candidates)
 
 
-def _scalar_condition_covers(higher: Any, lower: Any) -> bool:
+def _matches_nullish_value(
+    operator: str,
+    expected: Any,
+    action: str,
+    *,
+    absent: bool,
+) -> bool:
+    """Mirror compiler matches for an absent field or a present JSON null."""
+    is_deny = action == "deny"
+    if operator == "eq":
+        return expected is None and (is_deny or not absent)
+    if operator == "ne":
+        return is_deny and not _rego_values_equal(None, expected)
+    if operator == "not_in" and isinstance(expected, list):
+        return is_deny and not _json_value_in(None, expected)
+    # in/exists/ranges/string predicates all carry a non-null guard.
+    return False
+
+
+def _scalar_condition_covers(
+    higher: Any,
+    lower: Any,
+    *,
+    higher_action: str,
+    lower_action: str,
+) -> bool:
     """Return true only when ``lower`` is provably a subset of ``higher``.
 
     This deliberately recognizes a small, auditable subset of scalar
     predicates. An uncertain relationship is not called shadowing.
     """
-    if _condition_key(higher) == _condition_key(lower):
-        return True
     if not isinstance(higher, dict) or not isinstance(lower, dict):
         return False
     higher_parts = _condition_parts(higher)
@@ -399,21 +422,47 @@ def _scalar_condition_covers(higher: Any, lower: Any) -> bool:
     if higher_field != lower_field:
         return False
 
+    for absent in (True, False):
+        lower_matches = _matches_nullish_value(
+            lower_operator, lower_value, lower_action, absent=absent
+        )
+        higher_matches = _matches_nullish_value(
+            higher_operator, higher_value, higher_action, absent=absent
+        )
+        if lower_matches and not higher_matches:
+            return False
+
+    if _condition_key(higher) == _condition_key(lower):
+        return True
+
     if higher_operator == "eq":
         if lower_operator == "eq":
             return _rego_values_equal(higher_value, lower_value)
         if lower_operator == "in" and isinstance(lower_value, list):
-            return bool(lower_value) and all(
-                _rego_values_equal(candidate, higher_value) for candidate in lower_value
+            lower_non_null = [
+                candidate for candidate in lower_value if candidate is not None
+            ]
+            return bool(lower_non_null) and all(
+                _rego_values_equal(candidate, higher_value)
+                for candidate in lower_non_null
             )
         return False
 
     if higher_operator == "in" and isinstance(higher_value, list):
+        higher_non_null = [
+            candidate for candidate in higher_value if candidate is not None
+        ]
         if lower_operator == "eq":
-            return _json_value_in(lower_value, higher_value)
+            return lower_value is not None and _json_value_in(
+                lower_value, higher_non_null
+            )
         if lower_operator == "in" and isinstance(lower_value, list):
-            return bool(lower_value) and all(
-                _json_value_in(candidate, higher_value) for candidate in lower_value
+            lower_non_null = [
+                candidate for candidate in lower_value if candidate is not None
+            ]
+            return bool(lower_non_null) and all(
+                _json_value_in(candidate, higher_non_null)
+                for candidate in lower_non_null
             )
     return False
 
@@ -432,7 +481,10 @@ def _reject_covered_opposite_rules(rules: list[dict[str, Any]]) -> None:
             ):
                 continue
             if _scalar_condition_covers(
-                higher.get("condition"), lower.get("condition")
+                higher.get("condition"),
+                lower.get("condition"),
+                higher_action=_rule_action(higher),
+                lower_action=_rule_action(lower),
             ):
                 raise ResolutionError.invalid_governance(
                     f"rule {lower.get('name')!r} is provably covered by "
