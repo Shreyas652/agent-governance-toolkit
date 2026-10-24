@@ -306,6 +306,19 @@ def _condition_unsatisfiable(condition: Any, *, is_deny: bool = False) -> bool:
     return parts is not None and parts[1] == "in" and condition.get("value") == []
 
 
+def _contains_empty_not_in(condition: Any) -> bool:
+    if not isinstance(condition, dict):
+        return False
+    parts = _condition_parts(condition)
+    if parts is not None and parts[1] == "not_in" and parts[2] == []:
+        return True
+    for compound in ("and", "or"):
+        items = _compound_items(condition, compound)
+        if items is not None and any(_contains_empty_not_in(item) for item in items):
+            return True
+    return "not" in condition and _contains_empty_not_in(condition["not"])
+
+
 def _conditions_disjoint(
     left: Any,
     right: Any,
@@ -363,6 +376,78 @@ def _conditions_overlap(parent_condition: Any, child_condition: Any) -> bool:
     )
 
 
+def _json_value_in(value: Any, candidates: list[Any]) -> bool:
+    return any(_rego_values_equal(value, candidate) for candidate in candidates)
+
+
+def _scalar_condition_covers(higher: Any, lower: Any) -> bool:
+    """Return true only when ``lower`` is provably a subset of ``higher``.
+
+    This deliberately recognizes a small, auditable subset of scalar
+    predicates. An uncertain relationship is not called shadowing.
+    """
+    if _condition_key(higher) == _condition_key(lower):
+        return True
+    if not isinstance(higher, dict) or not isinstance(lower, dict):
+        return False
+    higher_parts = _condition_parts(higher)
+    lower_parts = _condition_parts(lower)
+    if higher_parts is None or lower_parts is None:
+        return False
+    higher_field, higher_operator, higher_value = higher_parts
+    lower_field, lower_operator, lower_value = lower_parts
+    if higher_field != lower_field:
+        return False
+
+    if higher_operator == "eq":
+        if lower_operator == "eq":
+            return _rego_values_equal(higher_value, lower_value)
+        if lower_operator == "in" and isinstance(lower_value, list):
+            return bool(lower_value) and all(
+                _rego_values_equal(candidate, higher_value) for candidate in lower_value
+            )
+        return False
+
+    if higher_operator == "in" and isinstance(higher_value, list):
+        if lower_operator == "eq":
+            return _json_value_in(lower_value, higher_value)
+        if lower_operator == "in" and isinstance(lower_value, list):
+            return bool(lower_value) and all(
+                _json_value_in(candidate, higher_value) for candidate in lower_value
+            )
+    return False
+
+
+def _opposite_actions(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    return {_rule_action(left), _rule_action(right)} == {"allow", "deny"}
+
+
+def _reject_covered_opposite_rules(rules: list[dict[str, Any]]) -> None:
+    for lower_index, lower in enumerate(rules):
+        lower_priority = lower.get("priority", 0)
+        for higher in rules[:lower_index]:
+            higher_priority = higher.get("priority", 0)
+            if higher_priority <= lower_priority or not _opposite_actions(
+                higher, lower
+            ):
+                continue
+            if _scalar_condition_covers(
+                higher.get("condition"), lower.get("condition")
+            ):
+                raise ResolutionError.invalid_governance(
+                    f"rule {lower.get('name')!r} is provably covered by "
+                    f"higher-priority opposite-action rule {higher.get('name')!r}"
+                )
+
+
+def _sort_and_reject_covered_rules(
+    rules: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rules.sort(key=lambda rule: rule.get("priority", 0), reverse=True)
+    _reject_covered_opposite_rules(rules)
+    return rules
+
+
 def merge_documents(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Merge governance documents into a flat priority-sorted rule list.
 
@@ -402,11 +487,18 @@ def merge_documents(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "refusing migration because it could silently fall through to "
                     "later rules or the default action"
                 )
+            if (
+                _rule_action(rule) == "allow"
+                and _contains_empty_not_in(rule.get("condition"))
+            ):
+                raise ResolutionError.invalid_governance(
+                    f"allow rule {rule['name']!r} uses not_in with an empty "
+                    "value set and would always match"
+                )
 
     if len(documents) == 1:
         rules = list(documents[0].get("rules", []))
-        rules.sort(key=lambda r: r.get("priority", 0), reverse=True)
-        return rules
+        return _sort_and_reject_covered_rules(rules)
 
     rules_by_name: dict[str, tuple[dict[str, Any], int]] = {}
     parent_denies: list[tuple[dict[str, Any], int]] = []
@@ -468,8 +560,7 @@ def merge_documents(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if _rule_action(rule) == "deny":
                 parent_denies.append((rule, level))
 
-    merged.sort(key=lambda r: r.get("priority", 0), reverse=True)
-    return merged
+    return _sort_and_reject_covered_rules(merged)
 
 
 def merge_top_level_section(
