@@ -1280,6 +1280,7 @@ def test_resolve_refuses_unsupported_default_action(
         resolve_manifest(tmp_path, tmp_path)
 
 
+# cspell:ignore toolname aciton acti
 @pytest.mark.parametrize(
     "field",
     [
